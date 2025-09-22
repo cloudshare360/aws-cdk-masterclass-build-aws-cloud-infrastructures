@@ -47,6 +47,41 @@ update_path() {
     done
 }
 
+# Function to read AWS credentials from CSV file
+read_aws_credentials_from_csv() {
+    local csv_file="$1"
+    
+    if [[ ! -f "$csv_file" ]]; then
+        print_error "CSV file not found: $csv_file"
+        return 1
+    fi
+    
+    # Skip header line and read the first data line
+    local credentials_line
+    credentials_line=$(tail -n +2 "$csv_file" | head -n 1)
+    
+    if [[ -z "$credentials_line" ]]; then
+        print_error "No credentials found in CSV file"
+        return 1
+    fi
+    
+    # Parse CSV line (assuming comma-separated values)
+    IFS=',' read -r aws_access_key_id aws_secret_access_key <<< "$credentials_line"
+    
+    # Remove any leading/trailing whitespace
+    aws_access_key_id=$(echo "$aws_access_key_id" | xargs)
+    aws_secret_access_key=$(echo "$aws_secret_access_key" | xargs)
+    
+    if [[ -z "$aws_access_key_id" || -z "$aws_secret_access_key" ]]; then
+        print_error "Invalid credentials format in CSV file"
+        return 1
+    fi
+    
+    export aws_access_key_id
+    export aws_secret_access_key
+    return 0
+}
+
 # Function to configure AWS profile
 configure_aws_profile() {
     print_status "Starting AWS profile configuration..."
@@ -54,37 +89,44 @@ configure_aws_profile() {
     echo ""
     echo "🔧 AWS Configuration Setup"
     echo "=========================="
-    echo "Please provide your AWS credentials and configuration:"
-    echo ""
     
-    # Prompt for AWS Access Key ID
-    while true; do
-        read -p "Enter AWS Access Key ID: " aws_access_key_id
-        if [[ -n "$aws_access_key_id" ]]; then
-            break
-        else
-            print_warning "AWS Access Key ID cannot be empty. Please try again."
-        fi
-    done
+    # Try to read credentials from CSV file first
+    local csv_file
+    csv_file="$(dirname "$0")/master-root.csv"
     
-    # Prompt for AWS Secret Access Key
-    while true; do
-        read -s -p "Enter AWS Secret Access Key: " aws_secret_access_key
+    if read_aws_credentials_from_csv "$csv_file"; then
+        print_success "Successfully read AWS credentials from $csv_file"
+        echo "  Access Key ID: ${aws_access_key_id:0:10}..."
+    else
+        print_warning "Could not read from CSV file, falling back to interactive input"
+        echo "Please provide your AWS credentials and configuration:"
         echo ""
-        if [[ -n "$aws_secret_access_key" ]]; then
-            break
-        else
-            print_warning "AWS Secret Access Key cannot be empty. Please try again."
-        fi
-    done
+        
+        # Prompt for AWS Access Key ID
+        while true; do
+            read -p "Enter AWS Access Key ID: " aws_access_key_id
+            if [[ -n "$aws_access_key_id" ]]; then
+                break
+            else
+                print_warning "AWS Access Key ID cannot be empty. Please try again."
+            fi
+        done
+        
+        # Prompt for AWS Secret Access Key
+        while true; do
+            read -s -p "Enter AWS Secret Access Key: " aws_secret_access_key
+            echo ""
+            if [[ -n "$aws_secret_access_key" ]]; then
+                break
+            else
+                print_warning "AWS Secret Access Key cannot be empty. Please try again."
+            fi
+        done
+    fi
     
-    # Prompt for region with default
-    read -p "Enter default region [us-east-1]: " aws_region
-    aws_region=${aws_region:-us-east-1}
-    
-    # Prompt for output format with default
-    read -p "Enter default output format [json]: " aws_output
-    aws_output=${aws_output:-json}
+    # Set default region and output format
+    aws_region="us-east-1"
+    aws_output="json"
     
     # Create AWS credentials directory if it doesn't exist
     mkdir -p "$HOME/.aws"
@@ -172,7 +214,7 @@ else
     npm install -g typescript
     
     # Get npm global bin path and update PATH
-    NPM_GLOBAL_BIN=$(npm bin -g 2>/dev/null || echo "/usr/local/bin")
+    NPM_GLOBAL_BIN=$(npm config get prefix 2>/dev/null)/bin || NPM_GLOBAL_BIN="/usr/local/bin"
     update_path "$NPM_GLOBAL_BIN"
     
     if command_exists tsc; then
@@ -193,7 +235,7 @@ else
     npm install -g aws-cdk
     
     # Get npm global bin path and update PATH (if not already done)
-    NPM_GLOBAL_BIN=$(npm bin -g 2>/dev/null || echo "/usr/local/bin")
+    NPM_GLOBAL_BIN=$(npm config get prefix 2>/dev/null)/bin || NPM_GLOBAL_BIN="/usr/local/bin"
     update_path "$NPM_GLOBAL_BIN"
     
     if command_exists cdk; then
@@ -215,7 +257,7 @@ echo "✅ AWS CDK: $(cdk --version)"
 echo ""
 
 # Update current session PATH
-NPM_BIN_PATH=$(npm bin -g 2>/dev/null || echo "/usr/local/bin")
+NPM_BIN_PATH=$(npm config get prefix 2>/dev/null)/bin || NPM_BIN_PATH="/usr/local/bin"
 export PATH="/usr/local/bin:$NPM_BIN_PATH:$PATH"
 
 print_success "All prerequisites installed successfully!"
@@ -223,20 +265,7 @@ print_success "All prerequisites installed successfully!"
 # Configure AWS Profile
 echo ""
 print_status "Setting up AWS configuration..."
-while true; do
-    read -p "Would you like to configure AWS credentials now? [Y/n]: " configure_aws
-    configure_aws=${configure_aws:-Y}
-    case $configure_aws in
-        [Yy]* ) 
-            configure_aws_profile
-            break;;
-        [Nn]* ) 
-            print_warning "Skipping AWS configuration. You can run 'aws configure' later."
-            break;;
-        * ) 
-            print_warning "Please answer yes (Y) or no (N).";;
-    esac
-done
+configure_aws_profile
 
 # Verify AWS credentials if configured
 if [[ -f "$HOME/.aws/credentials" ]]; then
@@ -252,6 +281,15 @@ if [[ -f "$HOME/.aws/credentials" ]]; then
     fi
 fi
 
+# Show AWS caller identity (principal ID)
+echo ""
+print_status "Displaying AWS caller identity..."
+if aws sts get-caller-identity > /dev/null 2>&1; then
+    aws sts get-caller-identity
+else
+    print_error "Failed to get AWS caller identity. Please check your AWS credentials."
+fi
+
 echo ""
 echo "🎉 Environment Setup Complete!"
 echo "=============================="
@@ -263,3 +301,13 @@ echo "2. Create a new CDK project: mkdir my-cdk-app && cd my-cdk-app && cdk init
 echo "3. Bootstrap CDK (first time only): cdk bootstrap"
 echo "4. Build and deploy: npm run build && cdk deploy"
 echo ""
+
+# Run validation script as the final step
+echo ""
+print_status "Running final environment validation..."
+SCRIPT_DIR="$(dirname "$0")"
+if [[ -f "$SCRIPT_DIR/validate-aws-cdk-env.sh" ]]; then
+    bash "$SCRIPT_DIR/validate-aws-cdk-env.sh"
+else
+    print_warning "Validation script not found: $SCRIPT_DIR/validate-aws-cdk-env.sh"
+fi
