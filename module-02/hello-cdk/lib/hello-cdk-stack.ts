@@ -19,6 +19,6 @@ export class HelloCdkStack extends cdk.Stack {
       handler: 'app.handler',
       memorySize: 128,
       code: Code.fromAsset(join(__dirname, '../lambdas')),
-    });
+cdk init` cannot be run in a non-empty directory!    });
   }
 }
